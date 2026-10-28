@@ -8,9 +8,9 @@
 
 | Если ты меняешь... | Лить в репозиторий | Ветка | Примечание |
 |---|---|---|---|
-| **Веб-интерфейс** (все вкладки `/prompts`, `/voice`, `/graphics`, `/batch`, `/history`) | **`Motion-Pr/fl-frontend`** | `main` | Next.js 16 (App Router) |
+| **Веб-интерфейс** (все вкладки `/script`, `/analytics`, `/prompts`, `/voice`, `/graphics`, `/batch`, `/history`) | **`Motion-Pr/fl-frontend`** | `main` | Next.js 16 (App Router) |
 | **Backend API**: генерация Veo/Imagen, очередь батчей, R2-архивы, промпты (`/api/prompts*`) и инфографика (`/api/infographics*`) | **`Motion-Pr/fl-api`** | `main` | FastAPI. Крутится на Windows (воркер Veo `:8000`) и на Linux (инфографика/промпты/R2-фоллбэк `:8001`) |
-| **Генератор сценариев** (`.docx` по теме/брифу, паспорт ниши, no-slop) | **`Motion-Pr/fl-scenario`** | `main` | Автономный CLI + Telegram-бот |
+| **Генератор сценариев**: веб-эндпоинты (`/api/scenario/*`), воркер очереди, аналитика тем, паспорт ниши, `.docx` по теме/брифу | **`Motion-Pr/fl-scenario`** | `main` | Полностью самостоятельный сервис (`api/` на порту `:8020`, `generate.py worker`, `bot.py`). Не зависит от `fl-api` |
 | **Перевод и озвучка**: веб-эндпоинты (`/api/voice/*`), воркер очереди, бот и CLI для `.docx` на 7 языков + Fish S2.1 / Drama 3 | **`Motion-Pr/fl-voice_translator`** | `main` | Полностью самостоятельный сервис (`api/` на порту `:8010`, `worker.py`, `bot.py`). Не зависит от `fl-api` |
 | **Промпты раскадровки (`.xlsx`) и стат-инфографика** по сценарию | **`Motion-Pr/hdoc-prompt`** | `main` | Python + Gemini API (HTTP API + Telegram-бот) |
 | **Анимированные карточки** (Remotion: люди, битвы, гербы `.mp4`/`.mov`) | **`Motion-Pr/motion-aign`** | `main` | Remotion + Python (`scenario/`, `bot/`) |
@@ -26,6 +26,7 @@
   - Все запросы UI `/*` → `127.0.0.1:3100` (`fl-frontend`)
   - `/api/infographics*` и `/api/prompts*` → локальный Linux **`127.0.0.1:8001`** (`fl-api` + Remotion)
   - `/api/voice/*` → **Windows `130.17.13.222:8010`** (`fl-voice_translator` web API)
+  - `/api/scenario/*` → **Windows `130.17.13.222:8020`** (`fl-scenario` web API)
   - Остальные `/api/*` → сначала на **Windows `130.17.13.222:8000`**, а если Windows недоступен — автоматический фоллбэк на локальный **`127.0.0.1:8001`** (`fl-api-fallback`).
 - **`/opt/fl-frontend`** — сервис `fl-frontend.service` (порт `127.0.0.1:3100`).
 - **`/opt/fl-api`** — сервис `fl-api-fallback.service` (порт `127.0.0.1:8001`, рендерит инфографику Remotion, генерирует промпты, раздаёт историю из R2 и ZIP-архивы).
@@ -33,7 +34,7 @@
 - **`/opt/hdoc-prompts`** — Docker-контейнер `hdoc-prompts-bot-1` (`docker compose up -d --build`).
 - **`/opt/flow-logs`** — Docker-контейнер `flow-logs-app-1` (порт `:8080`, дашборд `flowstat`).
 
-### Windows-сервер (`130.17.13.222`) — Боевой воркер Veo (Dolphin Anty) + Озвучка (`fl-voice_translator`)
+### Windows-сервер (`130.17.13.222`) — Veo (`fl-api`), Озвучка (`fl-voice_translator`), Сценарии (`fl-scenario`)
 - **`C:\fl-api`** (порт `0.0.0.0:8000`, автозапуск `fl-api`) — основной `fl-api`, который управляет профилями **Dolphin Anty** (`127.0.0.1:3001`), получает токены reCAPTCHA Enterprise в браузере и генерирует видео/картинки через Google Flow (`aisandbox-pa.clients6.google.com`).
   - Запуск вручную с логами в PowerShell:
     ```powershell
@@ -44,14 +45,16 @@
 - **`C:\Users\Administrator\script-translator v31`** — **`fl-voice_translator`**:
   - Веб-сервер озвучки `/api/voice/*`: порт `0.0.0.0:8010` (`start_api.bat` / Scheduled Task `fl-voice-api`).
   - Воркер очереди перевода (`agy.exe`) и синтеза речи (Fish Audio): `start_worker.bat` / Scheduled Task `fl-voice-worker`.
-- **`C:\Users\Administrator\script-generator`** — `fl-scenario`.
+- **`C:\Users\Administrator\script-generator`** — **`fl-scenario`**:
+  - Веб-сервер сценариев `/api/scenario/*`: порт `0.0.0.0:8020` (`start_api.bat` / Scheduled Task `fl-scenario-api`).
+  - Воркер очереди сценариев, брифов, паспортов ниш и аналитики (`claude` / `agy.exe`): `start_worker.bat` / Scheduled Task `fl-scenario-worker`.
 
 ---
 
 ## 3. Схема взаимодействия
 
 ```text
-[fl-scenario] (.docx)
+[fl-scenario (:8020)] (.docx)
       │
       ├──► [fl-voice_translator (:8010)]  ──► Перевод (7 яз.) + Озвучка (.mp3, Fish S2.1 / Drama 3)
       ├──► [motion-aign / fl-api (:8001)] ──► Анимированные карточки (.mp4 / .mov)
@@ -75,7 +78,7 @@
    - В работу берём ветку `feat/<название>` или `fix/<название>` и открываем **Pull Request** в `main`.
    - На каждый пуш/PR автоматически запускается CI:
      - `fl-api`: проверка синтаксиса + прогон всех тестов `uv run pytest -v`.
-     - `fl-frontend`: `npx tsc --noEmit` + полная прод-сборка `npm run build`.
+     - `fl-frontend`: `npx next typegen && npx tsc --noEmit` + полная прод-сборка `npm run build`.
      - `motion-aign`: проверка TypeScript (`tsc --noEmit`) + компиляция Python (`bot`, `scenario`).
      - `hdoc-prompt`: проверка зависимостей и компиляции Python.
 2. **Автодеплой только после зелёных тестов (`needs: test`)**:
